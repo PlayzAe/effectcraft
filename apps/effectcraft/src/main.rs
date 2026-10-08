@@ -38,13 +38,17 @@ fn main() -> eframe::Result {
     effectcraft_engine::logging::install_panic_hook();
     let mut control_port: Option<u16> = std::env::var("EFFECTCRAFT_CONTROL_PORT").ok().and_then(|p| p.parse().ok());
     let mut files = Vec::new();
-    let mut demo = true;
+    let mut demo = false;
+    let mut explicit_demo = false;
     let mut home: Option<bool> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--control" => control_port = args.next().and_then(|p| p.parse().ok()),
-            "--demo" => demo = true,
+            "--demo" => {
+                demo = true;
+                explicit_demo = true;
+            }
             "--empty" => demo = false,
             "--home" => home = Some(true),
             "--version" => {
@@ -111,24 +115,31 @@ fn main() -> eframe::Result {
             }
             session.load_settings();
             let recovery = if control_port.is_none() { session.begin_recovery() } else { None };
-            let project = files.iter().find(|f| f.ends_with(".ecproj")).cloned();
+            let is_proj = |f: &str| {
+                let l = f.to_ascii_lowercase();
+                l.ends_with(".ecproj") || l.ends_with(".ecprojx") || l.ends_with(".aep") || l.ends_with(".aepx")
+            };
+            let project = files.iter().find(|f| is_proj(f)).cloned();
+            let show_home = home.unwrap_or(session.prefs.startup.show_home_on_launch && files.is_empty() && control_port.is_none());
             if let Some(p) = project {
                 if let Err(e) = session.execute("file.open", json!({"path": p})) {
                     eprintln!("effectcraft: {e}");
                 }
-            } else if demo {
+            } else if (demo || explicit_demo) && !show_home {
                 let _ = session.execute("file.openDemoProject", json!({}));
             }
-            let media: Vec<String> = files.iter().filter(|f| !f.ends_with(".ecproj")).cloned().collect();
+            let media: Vec<String> = files.iter().filter(|f| !is_proj(f)).cloned().collect();
             if !media.is_empty()
                 && let Err(e) = session.execute("file.import", json!({"paths": media}))
             {
                 eprintln!("effectcraft: {e}");
             }
-            let show_home = home.unwrap_or(session.prefs.startup.show_home_on_launch && files.is_empty() && control_port.is_none());
             let mut app = EffectcraftApp::new(session);
             app.set_gpu_failure_bridge(gpu_failures);
             app.ui.start_screen = show_home;
+            if app.session.last_aep_report.as_ref().is_some_and(|r| r.has_issues()) {
+                app.dialog = Some(effectcraft_ui_egui::Dialog::AepReport);
+            }
             if let Some(r) = recovery {
                 app.offer_recovery(r);
             }
@@ -139,7 +150,12 @@ fn main() -> eframe::Result {
                 rfd::FileDialog::new().add_filter("EffectCraft Project", &["ecproj"]).set_file_name(name).save_file().map(|p| p.to_string_lossy().to_string())
             }));
             app.hooks.pick_open_project = Some(Box::new(|| {
-                rfd::FileDialog::new().add_filter("EffectCraft Project", &["ecproj", "ecprojx"]).pick_file().map(|p| p.to_string_lossy().to_string())
+                rfd::FileDialog::new()
+                    .add_filter("All Projects", &["ecproj", "ecprojx", "aep", "aepx"])
+                    .add_filter("After Effects Project", &["aep", "aepx"])
+                    .add_filter("EffectCraft Project", &["ecproj", "ecprojx"])
+                    .pick_file()
+                    .map(|p| p.to_string_lossy().to_string())
             }));
             app.hooks.audio_device = Some(Box::new(audio_out::open));
             app.hooks.audio_devices = Some(Box::new(audio_out::devices));

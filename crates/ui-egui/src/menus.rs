@@ -314,7 +314,17 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
         return Ok(Value::Null);
     }
     if let Some(k) = id.strip_prefix("timeline.keyAt.") {
-        return run_engine(app, ctx, "keys.toggleTransform", json!({"prop": k}));
+        let res = run_engine(app, ctx, "keys.toggleTransform", json!({"prop": k}));
+        let targets = reveal_targets(app);
+        for tid in &targets {
+            app.ui.timeline.open_layers.insert(*tid);
+            let mut kinds = app.ui.timeline.layer_reveal.get(tid).cloned().unwrap_or_default();
+            if !kinds.iter().any(|existing| existing == k) {
+                kinds.push(k.to_string());
+                app.ui.timeline.layer_reveal.insert(*tid, kinds);
+            }
+        }
+        return res;
     }
     if let Some(k) = id.strip_prefix("timeline.revealAdd.") {
         reveal(app, k, now, true);
@@ -600,8 +610,17 @@ fn run_engine(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
     let r = app.session.execute(id, params).map_err(|e| e.to_string());
     if let Err(e) = &r {
         app.ui.status = e.clone();
-    } else if COPY_COMMANDS.contains(&id) && app.session.state.text_edit.is_none() {
-        ctx.copy_text(clipboard_note(&app.session));
+    } else {
+        if matches!(id, "file.open" | "file.openRecent") {
+            if let Some(rep) = app.session.last_aep_report.as_ref() {
+                if rep.has_issues() {
+                    app.dialog = Some(crate::Dialog::AepReport);
+                }
+            }
+        }
+        if COPY_COMMANDS.contains(&id) && app.session.state.text_edit.is_none() {
+            ctx.copy_text(clipboard_note(&app.session));
+        }
     }
     let events = app.session.drain_events();
     for ev in events {
@@ -629,6 +648,14 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
     Ok(match id {
         "app.about" => {
             app.dialog = Some(crate::Dialog::About);
+            Value::Null
+        }
+        "help.aepReport" | "file.aepReport" => {
+            app.dialog = Some(crate::Dialog::AepReport);
+            Value::Null
+        }
+        "help.connectMcp" | "app.connectMcp" => {
+            app.dialog = Some(crate::Dialog::ConnectMcp);
             Value::Null
         }
         // Window ▸ <ScriptUI panel>: dock (or bring forward) the panel the script built.
@@ -1097,7 +1124,7 @@ fn file_dialog(app: &mut EffectcraftApp, id: &str, params: &Value) -> Option<Res
             let Some(f) = app.hooks.pick_files.as_ref() else { return Some(Err("no file dialog available (pass `paths`)".into())) };
             let paths = f(&[
                 "mp4", "mov", "m4v", "mkv", "webm", "png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp", "exr", "wav", "aif", "aiff", "mp3", "flac",
-                "ogg", "opus", "svg", "pdf", "ai", "eps", "psd", "psb", "gltf", "glb", "obj", "json", "csv", "tsv",
+                "ogg", "opus", "svg", "pdf", "ai", "eps", "psd", "psb", "gltf", "glb", "obj", "json", "csv", "tsv", "aep", "aepx",
             ]);
             match (paths.is_empty(), key) {
                 (true, _) => None,
@@ -1457,6 +1484,10 @@ pub fn handle_shortcuts(app: &mut EffectcraftApp, ctx: &egui::Context) {
                 continue;
             }
             let _ = invoke(app, ctx, "edit.clear", json!({}));
+            continue;
+        }
+        if key == egui::Key::F2 && !mods.any() {
+            let _ = invoke(app, ctx, "edit.deselectAll", json!({}));
             continue;
         }
         if let Some((_, _, id, params)) = binds.iter().find(|(m, k, ..)| *k == key && mods_match(*m, mods)) {

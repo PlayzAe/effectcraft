@@ -347,6 +347,69 @@ fn filtered_project_select_all_does_not_delete_hidden_assets() {
     assert_eq!(h.state().session.project.items.len(), before - 1);
 }
 
+#[test]
+fn timeline_empty_click_and_f2_deselects_layers() {
+    let mut h = harness();
+    let ids: Vec<LayerId> = h.state().session.active_comp().unwrap().layers.iter().map(|l| l.id).collect();
+    h.state_mut().session.execute("layer.select", json!({"layers": [ids[0].0]})).unwrap();
+    assert_eq!(h.state().session.state.selected_layers, vec![ids[0]]);
+
+    // F2 deselects all layers
+    h.state_mut().ui.focused = PanelKind::Timeline;
+    h.input_mut().events.push(Event::Key {
+        key: egui::Key::F2,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(2);
+    assert!(h.state().session.state.selected_layers.is_empty(), "F2 should deselect all layers");
+
+    // Select again and click timeline empty area (bottom)
+    h.state_mut().session.execute("layer.select", json!({"layers": [ids[0].0]})).unwrap();
+    assert_eq!(h.state().session.state.selected_layers, vec![ids[0]]);
+    let tl_rect = rect(&h, "timeline.layerMarquee");
+    let empty_pos = pos2(tl_rect.center().x, tl_rect.max.y - 10.0);
+    click(&mut h, empty_pos, Modifiers::NONE);
+    assert!(h.state().session.state.selected_layers.is_empty(), "Clicking timeline empty space should deselect layers");
+}
+
+#[test]
+fn keyframe_shortcut_reveals_property() {
+    let mut h = harness();
+    let id = h.state().session.active_comp().unwrap().layers[0].id;
+    h.state_mut().session.execute("layer.select", json!({"layers": [id.0]})).unwrap();
+    let ctx = h.ctx.clone();
+    // Initially not revealed
+    assert!(!h.state().ui.timeline.open_layers.contains(&id.0));
+
+    // Alt+Shift+P adds keyframe and reveals position
+    effectcraft_ui_egui::menus::invoke(h.state_mut(), &ctx, "timeline.keyAt.position", json!({})).unwrap();
+    assert!(h.state().ui.timeline.open_layers.contains(&id.0));
+    assert_eq!(h.state().ui.timeline.layer_reveal.get(&id.0), Some(&vec!["position".to_string()]));
+
+    // Alt+Shift+S adds scale
+    effectcraft_ui_egui::menus::invoke(h.state_mut(), &ctx, "timeline.keyAt.scale", json!({})).unwrap();
+    assert_eq!(h.state().ui.timeline.layer_reveal.get(&id.0), Some(&vec!["position".to_string(), "scale".to_string()]));
+}
+
+#[test]
+fn mask_row_selection_selects_all_vertices() {
+    let mut h = harness();
+    let id = h.state().session.active_comp().unwrap().layers[0].id;
+    h.state_mut().session.execute("layer.select", json!({"layers": [id.0]})).unwrap();
+    let r = h.state_mut().session.execute("layer.addMask", json!({"layer": id.0, "shape": "rect"})).unwrap();
+    let mask_uid = r["mask"].as_u64().unwrap();
+    h.run_steps(4);
+
+    // Click the mask group row
+    let mask_rect = rect(&h, &format!("timeline.group.{mask_uid}.name"));
+    click(&mut h, mask_rect.center(), Modifiers::NONE);
+    assert_eq!(h.state().session.state.selected_vertices.len(), 4, "Selecting mask row should select all 4 vertices");
+}
+
+
 /// Original four-tile UI fixture; no Adobe assets or reference screenshots.
 #[test]
 #[ignore]

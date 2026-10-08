@@ -10,6 +10,8 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod aep;
+
 pub mod autosave;
 pub mod camera_track;
 pub mod commands;
@@ -422,6 +424,8 @@ pub struct Session {
     /// event loop (the desktop app) turn this on; headless sessions run `footage.check` when
     /// they want it.
     pub check_footage_on_open: bool,
+    /// Last report generated when opening an After Effects (`.aep` / `.aepx`) project.
+    pub last_aep_report: Option<crate::aep::AepReport>,
 }
 
 /// A thumbnail render ([`Session::thumbnail_job`]): (width, height, RGBA8).
@@ -504,6 +508,7 @@ impl Default for Session {
             next_task_id: 1,
             learn: None,
             check_footage_on_open: false,
+            last_aep_report: None,
         }
     }
 }

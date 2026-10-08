@@ -39,6 +39,45 @@ fn demo(s: &mut Session, _: &Value) -> Result<Value> {
 pub(crate) fn open(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_p(p, "path").ok_or_else(|| bad("file.open", "missing `path`"))?;
     let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("cannot read {path}: {e}")))?;
+    let p_lower = path.to_ascii_lowercase();
+    let is_aep_path = p_lower.ends_with(".aep") || p_lower.ends_with(".aepx");
+    if is_aep_path || crate::aep::is_aep(&bytes) || crate::aep::is_aepx(&bytes) {
+        let (proj, mut report) = crate::aep::from_aep_or_aepx_with_report(&bytes, Some(std::path::Path::new(path))).map_err(EngineError::Other)?;
+        let available_families = crate::text_families();
+        let missing_fonts: Vec<String> = report.fonts.iter().filter(|f| {
+            *f != "AdobeInvisFont" && !available_families.iter().any(|fam| fam.eq_ignore_ascii_case(f))
+        }).cloned().collect();
+        report.missing_fonts = missing_fonts.clone();
+        report.project_path = Some(path.to_string());
+        s.last_aep_report = Some(report.clone());
+        s.replace_project(proj, Some(path.to_string()));
+        s.note_project_path(path);
+        let comps_count = s.project.comps().count();
+        s.toast(format!("Opened After Effects project ({comps_count} compositions)"));
+        if s.check_footage_on_open {
+            crate::footage_check::start(s, None, false)?;
+        }
+        if report.missing_footage_count > 0 {
+            s.toast(format!("After Effects Warning: {} file(s) are missing since this project was saved", report.missing_footage_count));
+        }
+        if !missing_fonts.is_empty() {
+            let names = missing_fonts.join(", ");
+            s.toast(format!("After Effects Warning: Missing font(s): {names}"));
+        }
+        if !report.custom_plugins.is_empty() {
+            let names = report.custom_plugins.join(", ");
+            s.toast(format!("After Effects Notice: Custom plugins detected ({names}). Third-party plugin support coming soon."));
+        }
+        return Ok(json!({
+            "path": path,
+            "type": "aep",
+            "comps": comps_count,
+            "missingFiles": report.missing_footage_count,
+            "missingFonts": missing_fonts.len(),
+            "plugins": report.plugins,
+            "customPlugins": report.custom_plugins,
+        }));
+    }
     let text = String::from_utf8(bytes).map_err(|_| EngineError::Other("not a text project file".into()))?;
     // XML copies (File ▸ Save a Copy As XML…) open like the JSON project.
     let text = if crate::xml_project::is_xml(&text) { crate::xml_project::from_xml(&text).map_err(EngineError::Other)? } else { text };
@@ -181,6 +220,50 @@ pub(crate) fn import(s: &mut Session, p: &Value) -> Result<Value> {
     let mut out_comps = vec![];
     let mut ids = vec![];
     let mut errors = vec![];
+    // After Effects projects (.aep / .aepx): import their compositions and items into this project.
+    let mut non_aep = vec![];
+    for path in paths {
+        let p_lower = path.to_ascii_lowercase();
+        let is_aep_file = p_lower.ends_with(".aep") || p_lower.ends_with(".aepx");
+        let bytes = s.services.read_file(&path).ok();
+        if is_aep_file || bytes.as_ref().is_some_and(|b| crate::aep::is_aep(b) || crate::aep::is_aepx(b)) {
+            if let Some(b) = bytes {
+                match crate::aep::from_aep_or_aepx(&b) {
+                    Ok(aep_proj) => {
+                        let imported = s.edit("Import After Effects Project", None, |proj, _st| {
+                            let mut new_item_ids = vec![];
+                            let mut new_comp_ids = vec![];
+                            for (_, it) in aep_proj.items {
+                                let new_id = effectcraft_project::ItemId(proj.alloc());
+                                let mut cloned_item = it.clone();
+                                cloned_item.id = new_id;
+                                if matches!(cloned_item.kind, effectcraft_project::ItemKind::Comp(_)) {
+                                    new_comp_ids.push(new_id.0);
+                                }
+                                new_item_ids.push(new_id.0);
+                                proj.items.insert(new_id, cloned_item);
+                            }
+                            Ok((new_item_ids, new_comp_ids))
+                        });
+                        match imported {
+                            Ok((new_items, new_comps)) => {
+                                ids.extend(new_items);
+                                out_comps.extend(new_comps);
+                            }
+                            Err(e) => errors.push(format!("{path}: {e}")),
+                        }
+                    }
+                    Err(e) => errors.push(format!("{path}: {e}")),
+                }
+            } else {
+                errors.push(format!("cannot read {path}"));
+            }
+        } else {
+            non_aep.push(path);
+        }
+    }
+    paths = non_aep;
+
     if let Some(retain) = retain {
         let mut rest = vec![];
         for path in paths {

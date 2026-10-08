@@ -92,6 +92,26 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     // Tool options.
     x += 10.0;
     if app.ui.tool.is_shape() || app.ui.tool == Tool::Pen {
+        let btn_shape = Rect::from_center_size(pos2(x + 10.0, cy), vec2(20.0, 20.0));
+        let btn_mask = Rect::from_center_size(pos2(x + 32.0, cy), vec2(20.0, 20.0));
+        if widgets::icon_button(ui, btn_shape, Icon::Star, app.ui.tool_creates_shape, &t, egui::Id::new("tool-create-shape"))
+            .on_hover_text("Tool Creates Shape")
+            .clicked()
+        {
+            app.ui.tool_creates_shape = true;
+        }
+        app.auto.add("header.toolCreatesShape", btn_shape, "Tool Creates Shape");
+        if widgets::icon_button(ui, btn_mask, Icon::Rectangle, !app.ui.tool_creates_shape, &t, egui::Id::new("tool-create-mask"))
+            .on_hover_text("Tool Creates Mask")
+            .clicked()
+        {
+            app.ui.tool_creates_shape = false;
+        }
+        app.auto.add("header.toolCreatesMask", btn_mask, "Tool Creates Mask");
+        x += 48.0;
+
+        sync_shape_properties(app, ui.ctx());
+
         p.text(pos2(x, cy), Align2::LEFT_CENTER, "Fill:", Tokens::ui(12.0), t.text_dim);
         x += 28.0;
         let fr = Rect::from_center_size(pos2(x + 10.0, cy), vec2(20.0, 16.0));
@@ -99,7 +119,11 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if widgets::swatch(ui, fr, [c[0], c[1], c[2], 1.0], egui::Id::new("tool-fill"), &t).clicked() {
             widgets::open_popup(ui, egui::Id::new("tool-fill-pop"));
         }
+        let old_fill = app.ui.fill_color;
         color_popup(ui, egui::Id::new("tool-fill-pop"), fr.left_bottom(), &mut app.ui.fill_color);
+        if app.ui.fill_color != old_fill {
+            apply_shape_fill(app);
+        }
         x += 32.0;
         p.text(pos2(x, cy), Align2::LEFT_CENTER, "Stroke:", Tokens::ui(12.0), t.text_dim);
         x += 44.0;
@@ -108,12 +132,20 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         if widgets::swatch(ui, sr, [c[0], c[1], c[2], 1.0], egui::Id::new("tool-stroke"), &t).clicked() {
             widgets::open_popup(ui, egui::Id::new("tool-stroke-pop"));
         }
+        let old_stroke = app.ui.stroke_color;
         color_popup(ui, egui::Id::new("tool-stroke-pop"), sr.left_bottom(), &mut app.ui.stroke_color);
+        if app.ui.stroke_color != old_stroke {
+            apply_shape_stroke_color(app);
+        }
         x += 26.0;
+        let old_w = app.ui.stroke_width;
         let (r, v, _) =
             widgets::hot_number_at(ui, pos2(x, cy - 9.0), egui::Id::new("tool-stroke-w"), app.ui.stroke_width as f64, 0.2, (0.0, 1000.0), 0, " px", &t);
         if let Some(v) = v {
             app.ui.stroke_width = v as f32;
+        }
+        if (app.ui.stroke_width - old_w).abs() > 1e-4 {
+            apply_shape_stroke_width(app);
         }
         x = r.max.x + 14.0;
     }
@@ -143,6 +175,17 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let _ = app.session.execute("help.discord", json!({}));
     }
     rx = discord.min.x - 6.0;
+    let mcp_btn = Rect::from_min_max(pos2(rx - 84.0, cy - 13.0), pos2(rx, cy + 13.0));
+    let mresp = ui.interact(mcp_btn, egui::Id::new("hdr-mcp"), Sense::click());
+    let mc = Color32::from_rgb(0x7c, 0x3a, 0xed);
+    p.rect_filled(mcp_btn, 13.0, if mresp.hovered() { mc.gamma_multiply(1.2) } else { mc });
+    icons::paint(&p, Rect::from_center_size(pos2(mcp_btn.min.x + 16.0, cy), vec2(14.0, 14.0)), Icon::Sparkle, Color32::WHITE);
+    p.text(pos2(mcp_btn.min.x + 28.0, cy), Align2::LEFT_CENTER, "AI MCP", Tokens::semibold(12.0), Color32::WHITE);
+    app.auto.add("header.mcp", mcp_btn, "Connect AI Assistant (MCP)");
+    if mresp.on_hover_text("Connect with AI Assistant (Claude, Cursor, MCP)").clicked() {
+        app.dialog = Some(Dialog::ConnectMcp);
+    }
+    rx = mcp_btn.min.x - 6.0;
     for (id, icon, tip, cmd) in
         [("hdr-github", Icon::Code, "EffectCraft on GitHub", "help.github"), ("hdr-web", Icon::Globe, "EffectCraft on getartcraft.com", "help.appPage")]
     {
@@ -323,3 +366,122 @@ pub fn paint_logo(p: &egui::Painter, r: Rect) {
         p.image(t.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     }
 }
+fn sync_shape_properties(app: &mut EffectcraftApp, ctx: &egui::Context) {
+    let sel_key = egui::Id::new("header-last-sel-shape");
+    let cur_sel = app.session.state.selected_layers.first().copied();
+    let last_sel: Option<effectcraft_project::LayerId> = ctx.data(|d| d.get_temp(sel_key));
+    if cur_sel != last_sel {
+        ctx.data_mut(|d| d.insert_temp(sel_key, cur_sel));
+        if let Some(lid) = cur_sel
+            && let Some(comp) = app.session.active_comp()
+            && let Some(layer) = comp.layer(lid)
+            && matches!(layer.source, effectcraft_project::LayerSource::Shape)
+            && let Some(contents) = layer.props.sub("contents")
+        {
+            let mut stroke_w = None;
+            let mut stroke_c = None;
+            let mut fill_c = None;
+            fn read_props(g: &effectcraft_project::PropGroup, sw: &mut Option<f64>, sc: &mut Option<[f64; 4]>, fc: &mut Option<[f64; 4]>) {
+                if g.match_id == "stroke" {
+                    if let Some(w) = g.get("width").and_then(|p| match p.value { effectcraft_keyframe::Value::Scalar(v) => Some(v), _ => None }) {
+                        *sw = Some(w);
+                    }
+                    if let Some(c) = g.get("color").and_then(|p| match p.value { effectcraft_keyframe::Value::Color(v) => Some(v), _ => None }) {
+                        *sc = Some(c);
+                    }
+                } else if g.match_id == "fill" {
+                    if let Some(c) = g.get("color").and_then(|p| match p.value { effectcraft_keyframe::Value::Color(v) => Some(v), _ => None }) {
+                        *fc = Some(c);
+                    }
+                }
+                for child in &g.children {
+                    if let effectcraft_project::Node::Group(cg) = child {
+                        read_props(cg, sw, sc, fc);
+                    }
+                }
+            }
+            read_props(contents, &mut stroke_w, &mut stroke_c, &mut fill_c);
+            if let Some(w) = stroke_w {
+                app.ui.stroke_width = w as f32;
+            }
+            if let Some(c) = stroke_c {
+                app.ui.stroke_color = [c[0] as f32, c[1] as f32, c[2] as f32];
+            }
+            if let Some(c) = fill_c {
+                app.ui.fill_color = [c[0] as f32, c[1] as f32, c[2] as f32];
+            }
+        }
+    }
+}
+
+fn apply_shape_fill(app: &mut EffectcraftApp) {
+    let col = app.ui.fill_color;
+    let sel = app.session.state.selected_layers.clone();
+    let comp = app.session.active_comp_arc();
+    let Some(comp) = comp else { return };
+    for lid in sel {
+        if let Some(layer) = comp.layer(lid) && matches!(layer.source, effectcraft_project::LayerSource::Shape) {
+            let mut uids = vec![];
+            if let Some(contents) = layer.props.sub("contents") {
+                find_group_props(contents, "fill", "color", &mut uids);
+            }
+            for uid in uids {
+                let _ = app.session.execute("prop.set", json!({"layer": lid.0, "prop": uid, "value": [col[0], col[1], col[2], 1.0]}));
+            }
+        }
+    }
+}
+
+fn apply_shape_stroke_color(app: &mut EffectcraftApp) {
+    let col = app.ui.stroke_color;
+    let sel = app.session.state.selected_layers.clone();
+    let comp = app.session.active_comp_arc();
+    let Some(comp) = comp else { return };
+    for lid in sel {
+        if let Some(layer) = comp.layer(lid) && matches!(layer.source, effectcraft_project::LayerSource::Shape) {
+            let mut uids = vec![];
+            if let Some(contents) = layer.props.sub("contents") {
+                find_group_props(contents, "stroke", "color", &mut uids);
+            }
+            for uid in uids {
+                let _ = app.session.execute("prop.set", json!({"layer": lid.0, "prop": uid, "value": [col[0], col[1], col[2], 1.0]}));
+            }
+        }
+    }
+}
+
+fn apply_shape_stroke_width(app: &mut EffectcraftApp) {
+    let w = app.ui.stroke_width as f64;
+    let sel = app.session.state.selected_layers.clone();
+    let comp = app.session.active_comp_arc();
+    let Some(comp) = comp else { return };
+    for lid in sel {
+        if let Some(layer) = comp.layer(lid) && matches!(layer.source, effectcraft_project::LayerSource::Shape) {
+            let mut uids = vec![];
+            if let Some(contents) = layer.props.sub("contents") {
+                find_group_props(contents, "stroke", "width", &mut uids);
+            }
+            if uids.is_empty() && w > 0.0 {
+                let _ = app.session.execute("layer.addShapeItem", json!({"layer": lid.0, "kind": "stroke"}));
+            } else {
+                for uid in uids {
+                    let _ = app.session.execute("prop.set", json!({"layer": lid.0, "prop": uid, "value": w}));
+                }
+            }
+        }
+    }
+}
+
+fn find_group_props(g: &effectcraft_project::PropGroup, group_match: &str, prop_name: &str, out: &mut Vec<effectcraft_project::Uid>) {
+    if g.match_id == group_match {
+        if let Some(p) = g.get(prop_name) {
+            out.push(p.uid);
+        }
+    }
+    for child in &g.children {
+        if let effectcraft_project::Node::Group(cg) = child {
+            find_group_props(cg, group_match, prop_name, out);
+        }
+    }
+}
+

@@ -1,5 +1,6 @@
 # Roadmap
 
+- 2026-10-08: After Effects (`.aep` / `.aepx`) compatibility advances: third-party plugin cataloging and safe bypass, intelligent multi-level relative footage relinking, missing font/media reporting dialog, drag-and-drop & CLI launch support, and live Model Context Protocol (MCP) pairing.
 - 2026-10-06: Settings ▸ General ▸ Language persists English/Japanese menu labels (`general.language`); native UI reuses installed Japanese font fallback, with no bundled CJK font. Dialog and panel contents remain English.
 
 EffectCraft aims to do what After Effects does, with the same panels, menus and behaviour, written
@@ -38,8 +39,9 @@ in [docs/gaps.md](docs/gaps.md).
   a living can do client work in EffectCraft. What holds it back:
   - **Fidelity is unmeasured.** No test compares our output with After Effects itself, and users
     are still finding behaviour bugs in features marked done.
-  - **After Effects projects can't be opened.** EffectCraft can't read `.aep` / `.aepx` files,
-    and third-party After Effects plug-ins can't run.
+  - **After Effects projects (`.aep` / `.aepx`):** Native opening and importing is supported for
+    `.aep` binary RIFX and `.aepx` XML projects; intelligent relative footage relinking, missing
+    media/font reporting, and third-party plugin cataloging/safe bypass are active.
   - **Reliability is uneven across platforms.** Early Linux users hit basic problems: viewer
     panning, panel docking, drag-and-drop import. A Windows user found the font menus offered only
     the bundled fonts (fixed 6 October: they list every installed font). Reports of 6 October
@@ -58,7 +60,7 @@ In priority order (details and "done" criteria in [docs/gaps.md](docs/gaps.md)):
 | G1 | Measure fidelity against After Effects: a corpus of test projects rendered and sampled in both apps, scored per feature | Turns every estimate into a measurement; a feature that behaves differently is not done |
 | G2 | Real-user reliability on macOS, Windows and Linux; fix every open user issue | Basic workflows must work everywhere before more features matter |
 | G3 | Stability: a green gate on the current toolchain, fuzzing of every input | A crash loses people's work |
-| G4 | Open After Effects projects (`.aep` / `.aepx`, pending an owner decision on clean-room scope); relinking moved footage | The biggest barrier to switching |
+| G4 | Open After Effects projects (`.aep` / `.aepx` supported; expanding deep property expressions and effects parity); relinking moved footage | The biggest barrier to switching |
 | G5 | Performance benchmarks at 1080p and 4K on real-world-sized projects | Unknown today |
 | G6 | Media depth: encoder efficiency, camera and phone formats | Files are larger than from mature encoders; camera formats are unverified |
 | G7 | Learned models: Roto Brush (M13.35: MobileSAM) and face tracking (M13.36: MediaPipe Face Landmarker), open source, optional downloads, swappable model module; next, measure them | Quality against After Effects is unmeasured |

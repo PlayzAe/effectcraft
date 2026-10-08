@@ -168,6 +168,8 @@ pub fn show(app: &mut EffectcraftApp, ctx: &egui::Context) {
     let t = app.tokens;
     match d {
         Dialog::About => about(app, ctx, &t),
+        Dialog::AepReport => aep_report(app, ctx, &t),
+        Dialog::ConnectMcp => connect_mcp(app, ctx, &t),
         Dialog::NewComp | Dialog::CompSettings => comp_settings(app, ctx, &t, d == Dialog::CompSettings),
         Dialog::SolidSettings => solid(app, ctx, &t),
         Dialog::CommandPalette => palette(app, ctx, &t),
@@ -267,6 +269,208 @@ fn about(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
         app.dialog = None;
     }
 }
+
+fn aep_report_plugins(ui: &mut egui::Ui, rep: &effectcraft_engine::aep::AepReport, t: &Tokens) {
+    if !rep.custom_plugins.is_empty() {
+        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
+        ui.painter().rect_filled(r, 4.0, Color32::from_rgb(0x3b, 0x24, 0x14));
+        ui.painter().text(
+            r.min + vec2(8.0, 12.0),
+            Align2::LEFT_CENTER,
+            format!("⚠️ Third-Party / Custom Plugins Detected ({})", rep.custom_plugins.len()),
+            Tokens::semibold(11.5),
+            Color32::from_rgb(0xfb, 0xbf, 0x24),
+        );
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(
+            "EffectCraft does not yet execute external third-party binary plugins (e.g. Cycore CC, Red Giant, Sapphire, Video Copilot). \
+            These effects have been safely bypassed so compositions, layers, timings, and transforms remain intact. \
+            Support for custom plugin suites is coming soon in upcoming updates!",
+        ).size(11.0).color(t.text_dim));
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            for plug in &rep.custom_plugins {
+                let w = ui.painter().layout_no_wrap(plug.clone(), Tokens::ui(10.5), Color32::WHITE).size().x + 12.0;
+                let (pr, _) = ui.allocate_exact_size(vec2(w, 18.0), Sense::hover());
+                ui.painter().rect_filled(pr, 3.0, Color32::from_rgb(0x45, 0x2b, 0x1a));
+                ui.painter().text(pr.center(), Align2::CENTER_CENTER, plug, Tokens::ui(10.5), Color32::from_rgb(0xfd, 0xba, 0x74));
+            }
+        });
+        ui.add_space(10.0);
+    }
+}
+
+fn aep_report(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
+    let mut close = false;
+    let rep = app.session.last_aep_report.clone().unwrap_or_default();
+    let title = "After Effects Project Import Report";
+
+    modal(ctx, title, vec2(580.0, 480.0), t, |ui| {
+        ui.add_space(2.0);
+
+        if let Some(p) = &rep.project_path {
+            let filename = std::path::Path::new(p).file_name().and_then(|f| f.to_str()).unwrap_or(p);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Project:").font(Tokens::semibold(12.0)).color(t.tab_text_active));
+                ui.label(egui::RichText::new(filename).font(Tokens::ui(12.0)).color(t.text));
+            });
+            ui.add_space(2.0);
+        }
+
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(format!("{} Composition(s) imported", rep.comp_count)).font(Tokens::semibold(11.5)).color(Color32::from_rgb(0x34, 0xd3, 0x99)));
+            ui.label(egui::RichText::new("•").color(t.text_faint));
+            ui.label(egui::RichText::new(format!("{} Media items detected", rep.total_footage_count)).font(Tokens::ui(11.5)).color(t.text_dim));
+        });
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        aep_report_plugins(ui, &rep, t);
+
+        if rep.missing_footage_count > 0 {
+            let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
+            ui.painter().rect_filled(r, 4.0, Color32::from_rgb(0x3c, 0x1a, 0x1a));
+            ui.painter().text(r.min + vec2(8.0, 12.0), Align2::LEFT_CENTER, format!("⚠️ Missing Media Files ({})", rep.missing_footage_count), Tokens::semibold(11.5), Color32::from_rgb(0xf8, 0x71, 0x71));
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("The following files could not be located at their original paths or in the project folder:").size(11.0).color(t.text_dim));
+            for missing in &rep.missing_footage {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("•").color(Color32::from_rgb(0xf8, 0x71, 0x71)));
+                    ui.label(egui::RichText::new(missing).size(11.0).color(t.text));
+                });
+            }
+            ui.add_space(10.0);
+        } else if rep.total_footage_count > 0 {
+            ui.label(egui::RichText::new("✔ All media files located and linked").size(11.5).color(Color32::from_rgb(0x34, 0xd3, 0x99)));
+            ui.add_space(6.0);
+        }
+
+        if !rep.missing_fonts.is_empty() {
+            let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
+            ui.painter().rect_filled(r, 4.0, Color32::from_rgb(0x2d, 0x22, 0x38));
+            ui.painter().text(r.min + vec2(8.0, 12.0), Align2::LEFT_CENTER, format!("ℹ️ Missing System Fonts ({})", rep.missing_fonts.len()), Tokens::semibold(11.5), Color32::from_rgb(0xc0, 0x84, 0xfc));
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("The following fonts used by text layers are not installed on this system (fallback fonts will be used):").size(11.0).color(t.text_dim));
+            for font in &rep.missing_fonts {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("•").color(Color32::from_rgb(0xc0, 0x84, 0xfc)));
+                    ui.label(egui::RichText::new(font).size(11.0).color(t.text));
+                });
+            }
+            ui.add_space(10.0);
+        }
+
+        if !rep.plugins.is_empty() {
+            ui.collapsing(format!("All effects & plugins referenced ({})", rep.plugins.len()), |ui| {
+                for p in &rep.plugins {
+                    ui.label(egui::RichText::new(format!("• {p}")).size(10.5).color(t.text_dim));
+                }
+            });
+            ui.add_space(8.0);
+        }
+
+        ui.separator();
+        ui.add_space(8.0);
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let r = ui.add(egui::Button::new(egui::RichText::new("   OK   ").color(Color32::WHITE).font(Tokens::semibold(12.5))).fill(t.accent));
+            app.auto.add("dialog.aepReport.ok", r.rect, "OK");
+            if r.clicked() {
+                close = true;
+            }
+        });
+    });
+
+    if close || ctx.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Escape)) {
+        app.dialog = None;
+    }
+}
+
+fn connect_mcp(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
+    let mut close = false;
+    modal(ctx, "Connect AI Assistant (Model Context Protocol)", vec2(580.0, 480.0), t, |ui| {
+        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 64.0), Sense::hover());
+        let p = ui.painter();
+        p.rect_filled(r, 8.0, Color32::from_rgb(0x1b, 0x1f, 0x38));
+        icons::paint(&p, Rect::from_center_size(r.min + vec2(28.0, 32.0), vec2(28.0, 28.0)), Icon::Sparkle, Color32::from_rgb(0xa7, 0x8b, 0xfa));
+        p.text(r.min + vec2(54.0, 22.0), Align2::LEFT_CENTER, "Model Context Protocol (MCP)", Tokens::semibold(16.0), Color32::WHITE);
+        p.text(
+            r.min + vec2(54.0, 44.0),
+            Align2::LEFT_CENTER,
+            "Pair-program with Claude, Cursor, or any AI assistant to build & edit VFX live",
+            Tokens::ui(11.5),
+            t.text_dim,
+        );
+
+        ui.add_space(10.0);
+        ui.label(
+            "EffectCraft includes a built-in MCP server. Connect your favorite AI agent to create layers, \
+            inspect compositions, automate keyframes, and render frames in real time.",
+        );
+        ui.add_space(8.0);
+
+        ui.horizontal(|ui| {
+            let (dot_r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+            ui.painter().circle_filled(dot_r.center(), 4.0, Color32::from_rgb(0x34, 0xd3, 0x99));
+            ui.label(egui::RichText::new("Live Bridge: Port 9877 (Ready)").font(Tokens::semibold(12.0)).color(Color32::from_rgb(0x34, 0xd3, 0x99)));
+        });
+
+        ui.add_space(10.0);
+
+        ui.label(egui::RichText::new("1. Claude Code (CLI)").font(Tokens::semibold(13.0)).color(t.tab_text_active));
+        ui.label("Run this command in your terminal to register the server:");
+        let cli_cmd = "claude mcp add effectcraft -- cargo run --quiet --release -p effectcraft-cli -- mcp --bridge 9877";
+        ui.horizontal(|ui| {
+            let (box_r, _) = ui.allocate_exact_size(vec2(ui.available_width() - 80.0, 26.0), Sense::hover());
+            ui.painter().rect_filled(box_r, 4.0, Color32::from_rgb(0x11, 0x14, 0x22));
+            ui.painter().text(box_r.min + vec2(8.0, 13.0), Align2::LEFT_CENTER, cli_cmd, Tokens::ui(11.0), Color32::from_rgb(0x93, 0xc5, 0xfd));
+            if ui.button("Copy").on_hover_text("Copy CLI command to clipboard").clicked() {
+                ctx.copy_text(cli_cmd.to_string());
+                app.ui.status = "Copied Claude CLI command to clipboard".into();
+            }
+        });
+
+        ui.add_space(10.0);
+
+        ui.label(egui::RichText::new("2. Claude Desktop & Cursor (.mcp.json)").font(Tokens::semibold(13.0)).color(t.tab_text_active));
+        ui.label("Add to your project's .mcp.json or claude_desktop_config.json:");
+        let json_config = "{\n  \"mcpServers\": {\n    \"effectcraft\": {\n      \"command\": \"cargo\",\n      \"args\": [\"run\", \"--quiet\", \"--release\", \"-p\", \"effectcraft-cli\", \"--\", \"mcp\", \"--bridge\", \"9877\"]\n    }\n  }\n}";
+        ui.horizontal(|ui| {
+            let (box_r, _) = ui.allocate_exact_size(vec2(ui.available_width() - 80.0, 48.0), Sense::hover());
+            ui.painter().rect_filled(box_r, 4.0, Color32::from_rgb(0x11, 0x14, 0x22));
+            ui.painter().text(
+                box_r.min + vec2(8.0, 12.0),
+                Align2::LEFT_TOP,
+                "\"effectcraft\": { \"command\": \"cargo\", \"args\": [\"run\", ..., \"mcp\", \"--bridge\", \"9877\"] }",
+                Tokens::ui(11.0),
+                Color32::from_rgb(0x93, 0xc5, 0xfd),
+            );
+            if ui.button("Copy JSON").on_hover_text("Copy MCP JSON configuration").clicked() {
+                ctx.copy_text(json_config.to_string());
+                app.ui.status = "Copied MCP configuration JSON to clipboard".into();
+            }
+        });
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Headless mode:").font(Tokens::semibold(11.5)));
+            ui.label(egui::RichText::new("`effectcraft-cli mcp --demo` runs without a GUI.").font(Tokens::ui(11.5)).color(t.text_dim));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Done").clicked() {
+                    close = true;
+                }
+            });
+        });
+    });
+    if close {
+        app.dialog = None;
+    }
+}
+
 
 fn comp_settings(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens, existing: bool) {
     let mut d = app.dialog_state.comp.clone();

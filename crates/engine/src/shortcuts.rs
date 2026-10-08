@@ -88,7 +88,10 @@ pub fn bindables(ui: &[UiCommand]) -> Vec<Bindable> {
     let entries = crate::menus::entries();
     for (path, e) in &entries {
         let key = binding_key(&e.command, &e.params);
-        let defaults = e.shortcut.iter().filter_map(|s| normalize(s)).collect();
+        let mut defaults: Vec<String> = e.shortcut.iter().filter_map(|s| normalize(s)).collect();
+        if e.command == "edit.deselectAll" && !defaults.iter().any(|d| d == "F2") {
+            defaults.push("F2".to_string());
+        }
         push(
             Bindable {
                 key,

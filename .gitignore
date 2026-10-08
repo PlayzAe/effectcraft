@@ -1,7 +1,12 @@
 *~
+*.exe
+*.pdb
 plan/
 target/
 /dist
 /log
 .DS_Store
 .claude/worktrees/
+.vscode/
+.idea/
+

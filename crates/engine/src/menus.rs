@@ -1217,6 +1217,7 @@ Help
   Enable Logging | help.enableLogging
   Reveal Logging File | help.revealLogFile
   ---
+  Connect AI Assistant (MCP)... | help.connectMcp
   Join the ArtCraft Discord... | help.discord
   Provide Feedback... | help.reportIssue
   ---

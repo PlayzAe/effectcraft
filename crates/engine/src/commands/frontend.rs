@@ -16,6 +16,7 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         // Application.
         fe!("app.about", "About EffectCraft...", [], None, "{}", always),
+        fe!("help.connectMcp", "Connect AI Assistant (MCP)...", ["Help"], None, "{}", always),
         fe!("layer.style.options", "Layer Style Options...", ["Layer", "Layer Styles"], None, "{layer?, style?: blendingOptions|dropShadow|…}", has_layers),
         fe!(
             "app.settings",

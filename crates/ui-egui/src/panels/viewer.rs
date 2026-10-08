@@ -1142,6 +1142,26 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     layer: h.layer,
                 }
             }),
+            Tool::Selection if ov::segment_at(&paths, &map, press, 8.0).is_some_and(|(l, m, _, _)| paths.iter().any(|p| p.layer == l && p.uid == m && p.is_mask)) => {
+                let (layer, mask, seg_idx, _) = ov::segment_at(&paths, &map, press, 8.0).unwrap();
+                let p_info = paths.iter().find(|p| p.layer == layer && p.uid == mask).unwrap();
+                let already_sel = app.session.state.selected_vertices.iter().any(|v| v.layer == layer && v.mask == mask);
+                if !already_sel {
+                    let verts: Vec<serde_json::Value> = (0..p_info.sp.vertices.len())
+                        .map(|i| json!({"layer": layer.0, "mask": mask, "index": i}))
+                        .collect();
+                    let _ = app.session.execute("mask.selectVertices", json!({"vertices": verts, "add": mods.shift}));
+                }
+                let v0 = p_info.sp.vertices.get(seg_idx).copied().unwrap_or([0.0, 0.0]);
+                let src = p_info.m.apply(gv2(v0[0], v0[1]));
+                Some(Gesture::Vertices {
+                    start: map.to_comp(press),
+                    src: [src.x, src.y],
+                    applied: [0.0; 2],
+                    inv: p_info.m.inverse().unwrap_or(Mat3::IDENTITY),
+                    layer,
+                })
+            }
             // Everything starts where the button went down: by the time the pointer has moved
             // far enough to count as a drag it may have left a small handle.
             Tool::Selection => {
@@ -1705,7 +1725,7 @@ fn pen_press(app: &mut EffectcraftApp, ui: &mut egui::Ui, ectx: &EvalCtx, map: &
         .find(|id| ectx.comp.layer(*id).is_some_and(|l| !l.switches.locked && (l.masks().is_some() || matches!(l.source, LayerSource::Shape))));
     let layer = target.and_then(|id| ectx.comp.layer(id));
     let (lid, uid, inv) = match layer {
-        Some(l) if !matches!(l.source, LayerSource::Shape) => {
+        Some(l) if !app.ui.tool_creates_shape || !matches!(l.source, LayerSource::Shape) => {
             let Some(inv) = l2c(ectx, l).0.inverse() else { return };
             let lp = inv.apply(gv2(c[0], c[1]));
             let Ok(v) = app.session.execute("mask.new", json!({"layer": l.id.0, "vertices": [[lp.x, lp.y]]})) else { return };
@@ -1790,13 +1810,13 @@ fn create_shape(app: &mut EffectcraftApp, tool: Tool, a: [f64; 2], b: [f64; 2], 
         Tool::Polygon => "polygon",
         _ => "star",
     };
-    // A non-shape layer selected and "creates mask": add a mask instead.
+    // A non-shape layer selected, or tool_creates_shape is false: add a mask instead.
     let sel = app.session.state.selected_layers.first().copied();
     let sel_layer = sel.and_then(|id| app.session.active_comp().and_then(|c| c.layer(id)).cloned());
     if let Some(l) = sel_layer
-        && !matches!(l.source, effectcraft_engine::project::LayerSource::Shape)
+        && (!app.ui.tool_creates_shape || !matches!(l.source, effectcraft_engine::project::LayerSource::Shape))
         && l.source.is_av()
-        && matches!(kind, "rect" | "ellipse")
+        && matches!(kind, "rect" | "ellipse" | "rounded")
     {
         // Mask in layer space: invert the layer transform.
         let comp = app.session.active_comp_arc();

@@ -28,7 +28,7 @@ fn dropped_files(app: &mut EffectcraftApp, ctx: &egui::Context) {
     }
     let (proj, rest): (Vec<String>, Vec<String>) = paths.into_iter().partition(|p| {
         let l = p.to_ascii_lowercase();
-        l.ends_with(".ecproj") || l.ends_with(".ecprojx")
+        l.ends_with(".ecproj") || l.ends_with(".ecprojx") || l.ends_with(".aep") || l.ends_with(".aepx")
     });
     if let Some(p) = proj.first()
         && let Err(e) = crate::menus::invoke(app, ctx, "file.open", json!({"path": p}))

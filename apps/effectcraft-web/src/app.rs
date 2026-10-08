@@ -54,7 +54,10 @@ pub fn repaint() {
 
 /// Open a project or import media from table paths (picked or dropped files).
 pub(crate) fn open_or_import(app: &mut EffectcraftApp, paths: Vec<String>) {
-    let (projects, media): (Vec<String>, Vec<String>) = paths.into_iter().partition(|p| p.to_ascii_lowercase().ends_with(".ecproj"));
+    let (projects, media): (Vec<String>, Vec<String>) = paths.into_iter().partition(|p| {
+        let l = p.to_ascii_lowercase();
+        l.ends_with(".ecproj") || l.ends_with(".ecprojx") || l.ends_with(".aep") || l.ends_with(".aepx")
+    });
     if let Some(p) = projects.last()
         && let Err(e) = app.session.execute("file.open", json!({"path": p}))
     {

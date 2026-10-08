@@ -1729,6 +1729,15 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 app.auto.add(&format!("timeline.group.{uid}.name"), gr_rect, name);
                 if gr.clicked() && uid & WAVE_BIT == 0 {
                     actions.push(("prop.select".into(), json!({"layer": layer.id.0, "prop": uid, "selectKeys": false})));
+                    if let Some(g) = layer.props.find_group(*uid)
+                        && matches!(g.kind, GroupKind::Mask { .. })
+                        && let Some(sp) = g.get("path").map(|pr| ectx.value(layer, pr)).and_then(|v| v.as_path().cloned())
+                    {
+                        let verts: Vec<serde_json::Value> = (0..sp.vertices.len())
+                            .map(|i| json!({"layer": layer.id.0, "mask": *uid, "index": i}))
+                            .collect();
+                        actions.push(("mask.selectVertices".into(), json!({"vertices": verts, "add": ui.input(|i| i.modifiers.shift)})));
+                    }
                 }
                 if gr.double_clicked() {
                     if fx.is_some() {
@@ -1960,6 +1969,19 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
                 if name_resp.clicked() {
                     actions.push(("prop.select".into(), json!({"layer": layer.id.0, "prop": uid, "add": ui.input(|i| i.modifiers.shift)})));
+                    if let Some(masks) = layer.masks() {
+                        for g in masks.groups() {
+                            if g.get("path").is_some_and(|p| p.uid == *uid) {
+                                if let Some(sp) = ectx.value(layer, prop).as_path().cloned() {
+                                    let verts: Vec<serde_json::Value> = (0..sp.vertices.len())
+                                        .map(|i| json!({"layer": layer.id.0, "mask": g.uid, "index": i}))
+                                        .collect();
+                                    actions.push(("mask.selectVertices".into(), json!({"vertices": verts, "add": ui.input(|i| i.modifiers.shift)})));
+                                }
+                                break;
+                            }
+                        }
+                    }
                 }
                 // Value editors.
                 let value = ectx.value(layer, prop);
@@ -2123,6 +2145,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     ui.set_clip_rect(full_clip);
     if outline_empty.clicked() && !ui.input(|i| i.modifiers.shift || i.modifiers.command) {
         actions.push(("layer.select".into(), json!({"layers": []})));
+        actions.push(("prop.select".into(), json!({"layer": 0, "prop": 0, "selectKeys": false})));
     }
     if let (Some(start), Some(end)) = (ctx.input(|i| i.pointer.press_origin()), outline_empty.interact_pointer_pos())
         && outline_empty.dragged()
@@ -2175,8 +2198,12 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     if graph_on {
         super::graph::show(app, ui, &gp, &comp, &ectx, tm, Rect::from_min_max(pos2(graph_x0, rows_rect.min.y), rows_rect.max), &mut actions);
     }
-    // Empty-area click in the graph: deselect keys; drag: box-select keys.
-    if empty.clicked() {
+    // Empty-area click in the graph: deselect keys and layers; drag: box-select keys.
+    if empty.clicked() && !ui.input(|i| i.modifiers.shift || i.modifiers.command) {
+        actions.push(("keys.select".into(), json!({"keys": []})));
+        actions.push(("layer.select".into(), json!({"layers": []})));
+        actions.push(("prop.select".into(), json!({"layer": 0, "prop": 0, "selectKeys": false})));
+    } else if empty.clicked() {
         actions.push(("keys.select".into(), json!({"keys": []})));
     }
     if let (true, Some(origin), Some(cur)) =
