@@ -29,7 +29,7 @@ use std::sync::Arc;
 
 use effectcraft_color::Label;
 use effectcraft_project::build;
-use effectcraft_project::{Comp, Footage, FootageKind, Item, ItemId, ItemKind, LayerSource, Project, Solid};
+use effectcraft_project::{Comp, Footage, FootageKind, Item, ItemId, ItemKind, LayerSource, Project, Resolution, Solid};
 use effectcraft_time::{FrameRate, Tick};
 
 /// Maximum allowed recursion depth for chunk trees.
@@ -1172,6 +1172,7 @@ fn build_project(
             global_light: Default::default(),
             guides: Vec::new(),
             essential: None,
+            resolution: Resolution::Auto,
         };
 
         for dlayer in dcomp.layers {
@@ -1369,6 +1370,7 @@ pub fn from_aepx(bytes: &[u8]) -> Result<Project, String> {
         global_light: Default::default(),
         guides: Vec::new(),
         essential: None,
+        resolution: Resolution::Auto,
     };
 
     let cid = ItemId(project.alloc());
