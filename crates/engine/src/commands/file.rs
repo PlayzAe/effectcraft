@@ -18,7 +18,10 @@ fn new_project(s: &mut Session, _: &Value) -> Result<Value> {
     if s.prefs.project.use_template && !tpl.is_empty() {
         let bytes = s.services.read_file(&tpl).map_err(|e| EngineError::Other(format!("cannot read the new project template {tpl}: {e}")))?;
         let text = String::from_utf8(bytes).map_err(|_| EngineError::Other("the new project template is not a project file".into()))?;
-        s.replace_project(Project::from_json(&text)?, None);
+        let mut proj = Project::from_json(&text)?;
+        crate::doc_path::resolve_footage(&mut proj, Some(&tpl));
+        s.replace_project(proj, None);
+        s.stored_paths.add(&s.project, Some(&tpl));
         s.update_sentinel();
         return Ok(json!({"template": tpl}));
     }
@@ -41,21 +44,35 @@ pub(crate) fn open(s: &mut Session, p: &Value) -> Result<Value> {
     let path = str_p(p, "path").ok_or_else(|| bad("file.open", "missing `path`"))?;
     let bytes = s.services.read_file(path).map_err(|e| EngineError::Other(format!("cannot read {path}: {e}")))?;
     let is_aep = crate::aep::is_aep_or_aepx(path, &bytes);
-    let (mut proj, saved_by) = if is_aep {
+    let (mut proj, saved_by, repaired, text) = if is_aep {
         let (proj, _report) = crate::aep::from_aep_or_aepx_with_report(&bytes, Some(std::path::Path::new(path)))
             .map_err(EngineError::Other)?;
-        (proj, None)
+        (proj, None, vec![], String::new())
     } else {
         let text = String::from_utf8(bytes).map_err(|_| EngineError::Other("not a text project file".into()))?;
         // XML copies (File ▸ Save a Copy As XML…) open like the JSON project.
         let text = if crate::xml_project::is_xml(&text) { crate::xml_project::from_xml(&text).map_err(EngineError::Other)? } else { text };
-        let proj = Project::from_json(&text).map_err(|e| EngineError::Other(format!("{path} is not a project EffectCraft can open: {e}")))?;
+        let (proj, repaired) =
+            Project::from_json_repaired(&text).map_err(|e| EngineError::Other(format!("{path} is not a project EffectCraft can open: {e}")))?;
         let saved_by = effectcraft_project::saved_by(&text);
-        (proj, saved_by)
+        (proj, saved_by, repaired, text)
     };
-    resolve_relative_footage(&mut proj, path, s.services.as_ref());
+    let refused = crate::doc_path::resolve_footage(&mut proj, Some(path));
     s.replace_project(proj, Some(path.to_string()));
+    s.stored_paths.add(&s.project, Some(path));
+    s.restore_view(&effectcraft_project::saved_view(&text));
     s.note_project_path(path);
+    // Values past the limits (a corrupt or hostile file) were brought within them (#788).
+    if !repaired.is_empty() {
+        let more = repaired.len().saturating_sub(3);
+        let shown = repaired.iter().take(3).cloned().collect::<Vec<_>>().join("; ");
+        let more = if more > 0 { format!(" and {more} more") } else { String::new() };
+        s.toast(format!("This project had values outside EffectCraft's limits, corrected when it opened: {shown}{more}."));
+    }
+    if let Some((_, first, why)) = refused.first() {
+        let n = refused.len();
+        s.toast(format!("{n} footage item{} marked missing: {}.", if n == 1 { "" } else { "s" }, crate::doc_path::refusal(first, *why)));
+    }
     // Written by a newer EffectCraft: what this version doesn't know would be lost on saving.
     if let Some(v) = saved_by.as_deref().filter(|v| effectcraft_project::is_newer_version(v, effectcraft_project::APP_VERSION)) {
         s.toast(format!(
@@ -70,44 +87,9 @@ pub(crate) fn open(s: &mut Session, p: &Value) -> Result<Value> {
     }
     if is_aep {
         let comp_count = s.project.comps().count();
-        Ok(json!({"path": path, "savedBy": saved_by, "type": "aep", "comps": comp_count}))
+        Ok(json!({"path": path, "type": "aep", "comps": comp_count}))
     } else {
-        Ok(json!({"path": path, "savedBy": saved_by}))
-    }
-}
-
-/// Footage saved with a relative path (imported by the CLI or an agent as `clip.mp4`, or written
-/// by hand) is found next to the project file, as After Effects looks for footage relative to
-/// the project. It used to be looked up from the working directory: the CLI started in the
-/// project's folder found it, the desktop app (started from the Finder, Explorer or a launcher,
-/// in another folder) showed and rendered nothing (#652). A path that exists from the working
-/// directory is kept.
-fn resolve_relative_footage(p: &mut Project, project_path: &str, services: &dyn crate::Services) {
-    use std::path::Path;
-    let Some(dir) = Path::new(project_path).parent().filter(|d| !d.as_os_str().is_empty()) else { return };
-    // A stored path is written with `/` (`media/clip.png` — the project format and the importers
-    // keep paths portable), but `Path::join` appends its right side verbatim: joining gave
-    // `…\media/clip.png`, mixed separators. Windows resolves that, which is why the clip was
-    // found at all, but it isn't the same string as the path it names, so it never compared equal
-    // to a path built with `Path::join` and the Dependencies panel, the project round-trip and
-    // copy/paste all disagreed about a file sitting right next to the project. Rebuild it
-    // component by component (the same relative-footage lookup as #652).
-    let beside = |f: &str| {
-        let mut p = dir.to_path_buf();
-        for c in Path::new(f).components() {
-            p.push(c.as_os_str());
-        }
-        p.to_string_lossy().to_string()
-    };
-    for item in p.items.values_mut() {
-        let ItemKind::Footage(f) = &mut item.kind else { continue };
-        if f.path.is_empty() || !Path::new(&f.path).is_relative() || services.exists(&f.path) || !services.exists(&beside(&f.path)) {
-            continue;
-        }
-        f.path = beside(&f.path);
-        for frame in f.sequence.iter_mut().filter(|q| Path::new(q.as_str()).is_relative()) {
-            *frame = beside(frame);
-        }
+        Ok(json!({"path": path, "savedBy": saved_by, "repaired": repaired}))
     }
 }
 
@@ -115,7 +97,7 @@ fn resolve_relative_footage(p: &mut Project, project_path: &str, services: &dyn 
 /// project opened from an XML copy saves as XML again). Fails, writing nothing, when the project
 /// wouldn't read back.
 pub(crate) fn file_text(s: &Session, path: &str) -> Result<String> {
-    let json = s.project.to_file_json()?;
+    let json = s.project.to_file_json_with_view(&s.saved_view())?;
     if crate::xml_project::is_xml_path(path) { crate::xml_project::to_xml(&json).map_err(EngineError::Other) } else { Ok(json) }
 }
 
@@ -262,6 +244,8 @@ struct PendingImport {
     comps: Vec<u64>,
     items: Vec<u64>,
     errors: Vec<String>,
+    /// EffectCraft projects merged in (`file.importProject` results); never added to a comp.
+    projects: Vec<Value>,
 }
 
 /// Everything probing a file needs, apart from the session (it can run on a background thread).
@@ -387,7 +371,6 @@ fn prepare_import(s: &mut Session, p: &Value) -> Result<PendingImport> {
             _ => return Err(bad("file.import", "page: a page number from 1")),
         },
     };
-    let mut paths = paths;
     let mut comps = vec![];
     let mut items = vec![];
     let mut errors = vec![];
@@ -404,13 +387,11 @@ fn prepare_import(s: &mut Session, p: &Value) -> Result<PendingImport> {
                             let mut new_item_ids = vec![];
                             let mut new_comp_ids = vec![];
 
-                            // 1. Allocate a new ItemId for each imported item
                             for &old_id in aep_proj.items.keys() {
                                 let new_id = effectcraft_project::ItemId(proj.alloc());
                                 id_map.insert(old_id, new_id);
                             }
 
-                            // 2. Insert items with remapped parent and layer sources
                             for (old_id, it) in aep_proj.items {
                                 let new_id = *id_map.get(&old_id).unwrap_or(&old_id);
                                 let mut cloned_item = it.clone();
@@ -464,7 +445,15 @@ fn prepare_import(s: &mut Session, p: &Value) -> Result<PendingImport> {
             non_aep.push(path);
         }
     }
-    paths = non_aep;
+    // EffectCraft projects import as projects, as After Effects imports an .aep.
+    let (project_paths, mut paths): (Vec<String>, Vec<String>) = non_aep.into_iter().partition(|x| super::import_project::is_project_path(x));
+    let mut projects = vec![];
+    for path in project_paths {
+        match s.execute("file.importProject", json!({"path": path})) {
+            Ok(r) => projects.push(r),
+            Err(e) => errors.push(format!("{path}: {e}")),
+        }
+    }
     if let Some(retain) = retain {
         let mut rest = vec![];
         for path in paths {
@@ -472,7 +461,7 @@ fn prepare_import(s: &mut Session, p: &Value) -> Result<PendingImport> {
                 Ok(b) if effectcraft_psd::is_psd(&b) => b,
                 Ok(b) if effectcraft_pdf::sniff(&b).is_some() && !path.to_ascii_lowercase().ends_with(".svg") => {
                     // PDF / Illustrator / EPS: one layer per file layer.
-                    match import_vector_comp(s, &path, &b, page) {
+                    match import_vector_comp(s, &path, &b, page, retain) {
                         Ok((comp, made)) => {
                             comps.push(comp);
                             items.extend(made);
@@ -496,6 +485,13 @@ fn prepare_import(s: &mut Session, p: &Value) -> Result<PendingImport> {
             }
         }
         paths = rest;
+        // Composition imports already made their sources, so they bypass add_footage's
+        // probed-footage refresh. Refresh them before any background probe job starts (#1070).
+        for id in &items {
+            if let Some(ItemKind::Footage(f)) = s.project.item(ItemId(*id)).map(|it| &it.kind) {
+                s.forget_decoded(f);
+            }
+        }
     }
     // Numbered stills as image sequences (the Import dialog's "<format> Sequence" and Force
     // Alphabetical Order), at `frameRate` or Settings ▸ Import ▸ Sequence Footage.
@@ -515,13 +511,13 @@ fn prepare_import(s: &mut Session, p: &Value) -> Result<PendingImport> {
         page,
         psd_layer: p.get("layer").cloned(),
     };
-    Ok(PendingImport { sources, prober, comps, items, errors })
+    Ok(PendingImport { sources, prober, comps, items, errors, projects })
 }
 
 /// The last part of an import: add the probed files to the project (one undo step) and select
 /// everything the import made, so the Project panel shows it.
 fn add_footage(s: &mut Session, pending: PendingImport, probed: Vec<std::result::Result<Probed, String>>) -> Result<Value> {
-    let PendingImport { comps, mut items, mut errors, .. } = pending;
+    let PendingImport { comps, mut items, mut errors, projects, .. } = pending;
     let mut found = vec![];
     let mut warnings = vec![];
     for r in probed {
@@ -536,6 +532,12 @@ fn add_footage(s: &mut Session, pending: PendingImport, probed: Vec<std::result:
     let mut asked: Vec<u64> = vec![];
     let made: Vec<ItemId> = comps.iter().map(|c| ItemId(*c)).collect();
     if !found.is_empty() {
+        // The file may have been overwritten since an earlier import or project decoded it (the
+        // media layer keys frames by path): a fresh import reads it again (#1070).
+        for f in &found {
+            s.forget_decoded(&f.footage);
+            s.stored_paths.allow(&f.footage);
+        }
         s.edit("Import", None, |proj, st| {
             let mut selection = made;
             for f in found {
@@ -573,7 +575,11 @@ fn add_footage(s: &mut Session, pending: PendingImport, probed: Vec<std::result:
     if let Some(first) = asked.first() {
         s.events.push(crate::Event::Frontend { command: "file.interpretFootage".into(), params: json!({"item": first, "reason": "unlabeledAlpha"}) });
     }
-    Ok(json!({"items": items, "comps": comps, "errors": errors, "warnings": warnings, "unlabeledAlpha": asked}))
+    let mut out = json!({"items": items, "comps": comps, "errors": errors, "warnings": warnings, "unlabeledAlpha": asked});
+    if !projects.is_empty() {
+        out["projects"] = Value::Array(projects);
+    }
+    Ok(out)
 }
 
 /// Whether a file format states how its alpha is stored (PNG, GIF, WebP and PSD are straight by
@@ -612,7 +618,7 @@ pub(crate) fn import_psd_comp(s: &mut Session, path: &str, bytes: Vec<u8>, retai
 
 /// Import page `page` of a PDF / Illustrator / EPS file as a composition (one undo step).
 /// Returns (comp, items).
-fn import_vector_comp(s: &mut Session, path: &str, bytes: &[u8], page: u32) -> Result<(u64, Vec<u64>)> {
+fn import_vector_comp(s: &mut Session, path: &str, bytes: &[u8], page: u32, retain: bool) -> Result<(u64, Vec<u64>)> {
     let mut name = std::path::Path::new(path).file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Vector".into());
     if page > 0 {
         name = format!("{name} (Page {})", page + 1);
@@ -621,7 +627,7 @@ fn import_vector_comp(s: &mut Session, path: &str, bytes: &[u8], page: u32) -> R
     let secs = if s.prefs.import.still_footage == "seconds" { s.prefs.import.still_seconds } else { 10.0 };
     let duration = rate.snap_nearest(effectcraft_time::Tick::from_seconds_f64(secs));
     let (comp, folder, items) = s.edit("Import", None, |proj, st| {
-        let r = crate::vector::import_vector_comp(proj, path, bytes, &name, page, rate, duration).map_err(EngineError::Other)?;
+        let r = crate::vector::import_vector_comp(proj, path, bytes, &name, page, retain, (rate, duration)).map_err(EngineError::Other)?;
         st.project_selection = vec![r.0];
         Ok(r)
     })?;
